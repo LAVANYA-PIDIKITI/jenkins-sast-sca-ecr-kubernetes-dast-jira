@@ -11,31 +11,9 @@ pipeline {
         }
 
         stage('RunSCAAnalysisUsingSnyk') {
-            steps {
-                script {
-                    try {
-                        withCredentials([string(credentialsId: 'SNYK_TOKEN', variable: 'SNYK_TOKEN')]) {
-                            sh 'mvn snyk:test -fn'
-                        }
-                    } catch (Exception e) {
-                        // If Snyk analysis fails, create a JIRA ticket
-                        echo "Snyk analysis failed. Creating JIRA ticket..."
-                        
-                        // JIRA Issue Creation Logic
-                        def jiraServer = 'JIRA_SERVER' 
-                        def testIssue = [
-                            fields: [
-                                project: [id: '10000'], 
-                                summary: 'SCA Analysis Failed - Action Required',
-                                description: "SCA analysis failed during Jenkins pipeline execution. Error: ${e}",
-                                issuetype: [name: 'Bug'], 
-                                assignee: [username: 'Lavanya Pidikiti'] 
-                            ]
-                        ]
-                        def response = jiraNewIssue(issue: testIssue, site: jiraServer)
-                        
-                        echo "JIRA Ticket Created: ${response.data.key}"
-                    }
+            steps {		
+                withCredentials([string(credentialsId: 'SNYK_TOKEN', variable: 'SNYK_TOKEN')]) {
+                    sh 'mvn snyk:test -fn'
                 }
             }
         }
@@ -69,10 +47,55 @@ pipeline {
         stage('RunDASTUsingZAP') {
             steps {
                 withKubeConfig([credentialsId: 'kubelogin']) {
-                    sh 'zap.sh -cmd -quickurl http://$(kubectl get services/easybuggy --namespace=devsecops -o json | jq -r ".status.loadBalancer.ingress[] | .hostname") -quickprogress -quickout ${WORKSPACE}/zap_report.html'
-                    archiveArtifacts artifacts: 'zap_report.html'
+                    script {
+                        // Run ZAP and generate the report
+                        sh 'zap.sh -cmd -quickurl http://$(kubectl get services/easybuggy --namespace=devsecops -o json | jq -r ".status.loadBalancer.ingress[] | .hostname") -quickprogress -quickout ${WORKSPACE}/zap_report.html'
+
+                        // Archive the report
+                        archiveArtifacts artifacts: 'zap_report.html'
+
+                        // Parse ZAP Report and create JIRA issues
+                        def zapReport = readFile("${WORKSPACE}/zap_report.html") // Read the ZAP report
+                        def vulnerabilities = parseZapReport(zapReport) // Parse vulnerabilities (method defined below)
+
+                        // Create JIRA issues for each vulnerability
+                        def jiraServer = 'JIRA_SERVER' // JIRA server configuration in Jenkins
+                        for (vuln in vulnerabilities) {
+                            def testIssue = [
+                                fields: [
+                                    project: [id: '10000'], 
+                                    summary: "Vulnerability Found: ${vuln.name}",
+                                    description: """
+                                        Severity: ${vuln.severity}
+                                        URL: ${vuln.url}
+                                        Description: ${vuln.description}
+                                    """,
+                                    issuetype: [name: 'Bug'], 
+                                    assignee: [username: 'Lavanya Pidikiti']
+                                ]
+                            ]
+                            def response = jiraNewIssue(issue: testIssue, site: jiraServer)
+                            echo "Created JIRA Ticket: ${response.data.key}"
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+// Helper function to parse ZAP report and extract vulnerabilities
+def parseZapReport(reportContent) {
+    // Placeholder function: Parse ZAP report and return a list of vulnerabilities
+    // Each vulnerability contains 'name', 'severity', 'url', and 'description'.
+    // Actual implementation depends on the ZAP report format (e.g., XML or HTML parsing).
+    def vulnerabilities = []
+    // Example vulnerability for demonstration
+    vulnerabilities << [
+        name: "SQL Injection",
+        severity: "High",
+        url: "http://example.com/vulnerable-endpoint",
+        description: "The application is vulnerable to SQL injection."
+    ]
+    return vulnerabilities
 }
